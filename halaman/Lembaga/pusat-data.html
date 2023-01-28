@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script type="text/javascript" id="debugbar_dynamic_script">
+	/*
+ * Functionality for the CodeIgniter Debug Toolbar.
+ */
+
+var ciDebugBar = {
+
+	toolbarContainer : null,
+	toolbar : null,
+	icon : null,
+
+	//--------------------------------------------------------------------
+
+	init : function () {
+		this.toolbarContainer = document.getElementById('toolbarContainer');
+		this.toolbar          = document.getElementById('debug-bar');
+		this.icon             = document.getElementById('debug-icon');
+
+		ciDebugBar.createListeners();
+		ciDebugBar.setToolbarState();
+		ciDebugBar.setToolbarPosition();
+		ciDebugBar.setToolbarTheme();
+		ciDebugBar.toggleViewsHints();
+		ciDebugBar.routerLink();
+
+		document.getElementById('debug-bar-link').addEventListener('click', ciDebugBar.toggleToolbar, true);
+		document.getElementById('debug-icon-link').addEventListener('click', ciDebugBar.toggleToolbar, true);
+
+		// Allows to highlight the row of the current history request
+		var btn = document.querySelector('button[data-time="' + localStorage.getItem('debugbar-time') + '"]');
+		ciDebugBar.addClass(btn.parentNode.parentNode, 'current');
+
+		historyLoad = document.getElementsByClassName('ci-history-load');
+
+		for (var i = 0; i < historyLoad.length; i++)
+		{
+			historyLoad[i].addEventListener('click', function () {
+				loadDoc(this.getAttribute('data-time'));
+			}, true);
+		}
+
+		// Display the active Tab on page load
+		var tab = ciDebugBar.readCookie('debug-bar-tab');
+		if (document.getElementById(tab))
+		{
+			var el           = document.getElementById(tab);
+			el.style.display = 'block';
+			ciDebugBar.addClass(el, 'active');
+			tab = document.querySelector('[data-tab=' + tab + ']');
+			if (tab)
+			{
+				ciDebugBar.addClass(tab.parentNode, 'active');
+			}
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	createListeners : function () {
+		var buttons = [].slice.call(document.querySelectorAll('#debug-bar .ci-label a'));
+
+		for (var i = 0; i < buttons.length; i++)
+		{
+			buttons[i].addEventListener('click', ciDebugBar.showTab, true);
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	showTab: function () {
+		// Get the target tab, if any
+		var tab = document.getElementById(this.getAttribute('data-tab'));
+
+		// If the label have not a tab stops here
+		if (! tab)
+		{
+			return;
+		}
+
+		// Remove debug-bar-tab cookie
+		ciDebugBar.createCookie('debug-bar-tab', '', -1);
+
+		// Check our current state.
+		var state = tab.style.display;
+
+		// Hide all tabs
+		var tabs = document.querySelectorAll('#debug-bar .tab');
+
+		for (var i = 0; i < tabs.length; i++)
+		{
+			tabs[i].style.display = 'none';
+		}
+
+		// Mark all labels as inactive
+		var labels = document.querySelectorAll('#debug-bar .ci-label');
+
+		for (var i = 0; i < labels.length; i++)
+		{
+			ciDebugBar.removeClass(labels[i], 'active');
+		}
+
+		// Show/hide the selected tab
+		if (state != 'block')
+		{
+			tab.style.display = 'block';
+			ciDebugBar.addClass(this.parentNode, 'active');
+			// Create debug-bar-tab cookie to persistent state
+			ciDebugBar.createCookie('debug-bar-tab', this.getAttribute('data-tab'), 365);
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	addClass : function (el, className) {
+		if (el.classList)
+		{
+			el.classList.add(className);
+		}
+		else
+		{
+			el.className += ' ' + className;
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	removeClass : function (el, className) {
+		if (el.classList)
+		{
+			el.classList.remove(className);
+		}
+		else
+		{
+			el.className = el.className.replace(new RegExp('(^|\\b)' + className.split(' ').join('|') + '(\\b|$)', 'gi'), ' ');
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	/**
+	 * Toggle display of a data table
+	 *
+	 * @param obj
+	 */
+	toggleDataTable : function (obj) {
+		if (typeof obj == 'string')
+		{
+			obj = document.getElementById(obj + '_table');
+		}
+
+		if (obj)
+		{
+			obj.style.display = obj.style.display == 'none' ? 'block' : 'none';
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	/**
+	 *   Toggle tool bar from full to icon and icon to full
+	 */
+	toggleToolbar : function () {
+		var open = ciDebugBar.toolbar.style.display != 'none';
+
+		ciDebugBar.icon.style.display    = open == true ? 'inline-block' : 'none';
+		ciDebugBar.toolbar.style.display = open == false ? 'inline-block' : 'none';
+
+		// Remember it for other page loads on this site
+		ciDebugBar.createCookie('debug-bar-state', '', -1);
+		ciDebugBar.createCookie('debug-bar-state', open == true ? 'minimized' : 'open' , 365);
+	},
+
+	//--------------------------------------------------------------------
+
+	/**
+	 * Sets the initial state of the toolbar (open or minimized) when
+	 * the page is first loaded to allow it to remember the state between refreshes.
+	 */
+	setToolbarState: function () {
+		var open = ciDebugBar.readCookie('debug-bar-state');
+
+		ciDebugBar.icon.style.display    = open != 'open' ? 'inline-block' : 'none';
+		ciDebugBar.toolbar.style.display = open == 'open' ? 'inline-block' : 'none';
+	},
+
+	//--------------------------------------------------------------------
+
+	toggleViewsHints: function () {
+		// Avoid toggle hints on history requests that are not the initial
+		if (localStorage.getItem('debugbar-time') != localStorage.getItem('debugbar-time-new'))
+		{
+			var a  = document.querySelector('a[data-tab="ci-views"]');
+			a.href = '#';
+			return;
+		}
+
+		var nodeList       = []; // [ Element, NewElement( 1 )/OldElement( 0 ) ]
+		var sortedComments = [];
+		var comments       = [];
+
+		var getComments = function () {
+			var nodes        = [];
+			var result       = [];
+			var xpathResults = document.evaluate( "//comment()[starts-with(., ' DEBUG-VIEW')]", document, null, XPathResult.ANY_TYPE, null);
+			var nextNode     = xpathResults.iterateNext();
+			while ( nextNode )
+			{
+				nodes.push( nextNode );
+				nextNode = xpathResults.iterateNext();
+			}
+
+			// sort comment by opening and closing tags
+			for (var i = 0; i < nodes.length; ++i)
+			{
+				// get file path + name to use as key
+				var path = nodes[i].nodeValue.substring( 18, nodes[i].nodeValue.length - 1 );
+
+				if ( nodes[i].nodeValue[12] === 'S' ) // simple check for start comment
+				{
+					// create new entry
+					result[path] = [ nodes[i], null ];
+				}
+				else if (result[path])
+				{
+					// add to existing entry
+					result[path][1] = nodes[i];
+				}
+			}
+
+			return result;
+		};
+
+		// find node that has TargetNode as parentNode
+		var getParentNode = function ( node, targetNode ) {
+			if ( node.parentNode === null )
+			{
+				return null;
+			}
+
+			if ( node.parentNode !== targetNode )
+			{
+				return getParentNode( node.parentNode, targetNode );
+			}
+
+			return node;
+		};
+
+		// define invalid & outer ( also invalid ) elements
+		const INVALID_ELEMENTS = [ 'NOSCRIPT', 'SCRIPT', 'STYLE' ];
+		const OUTER_ELEMENTS   = [ 'HTML', 'BODY', 'HEAD' ];
+
+		var getValidElementInner = function ( node, reverse ) {
+			// handle invalid tags
+			if ( OUTER_ELEMENTS.indexOf( node.nodeName ) !== -1 )
+			{
+				for (var i = 0; i < document.body.children.length; ++i)
+				{
+					var index   = reverse ? document.body.children.length - ( i + 1 ) : i;
+					var element = document.body.children[index];
+
+					// skip invalid tags
+					if ( INVALID_ELEMENTS.indexOf( element.nodeName ) !== -1 )
+					{
+						continue;
+					}
+
+					return [ element, reverse ];
+				}
+
+				return null;
+			}
+
+			// get to next valid element
+			while ( node !== null && INVALID_ELEMENTS.indexOf( node.nodeName ) !== -1 )
+			{
+				node = reverse ? node.previousElementSibling : node.nextElementSibling;
+			}
+
+			// return non array if we couldnt find something
+			if ( node === null )
+			{
+				return null;
+			}
+
+			return [ node, reverse ];
+		};
+
+		// get next valid element ( to be safe to add divs )
+		// @return [ element, skip element ] or null if we couldnt find a valid place
+		var getValidElement = function ( nodeElement ) {
+			if (nodeElement)
+			{
+				if ( nodeElement.nextElementSibling !== null )
+				{
+					return getValidElementInner( nodeElement.nextElementSibling, false )
+						|| getValidElementInner( nodeElement.previousElementSibling, true );
+				}
+				if ( nodeElement.previousElementSibling !== null )
+				{
+					return getValidElementInner( nodeElement.previousElementSibling, true );
+				}
+			}
+
+			// something went wrong! -> element is not in DOM
+			return null;
+		};
+
+		function showHints()
+		{
+			// Had AJAX? Reset view blocks
+			sortedComments = getComments();
+
+			for (var key in sortedComments)
+			{
+				var startElement = getValidElement( sortedComments[key][0] );
+				var endElement   = getValidElement( sortedComments[key][1] );
+
+				// skip if we couldnt get a valid element
+				if ( startElement === null || endElement === null )
+				{
+					continue;
+				}
+
+				// find element which has same parent as startelement
+				var jointParent = getParentNode( endElement[0], startElement[0].parentNode );
+				if ( jointParent === null )
+				{
+					// find element which has same parent as endelement
+					jointParent = getParentNode( startElement[0], endElement[0].parentNode );
+					if ( jointParent === null )
+					{
+						// both tries failed
+						continue;
+					}
+					else
+					{
+						startElement[0] = jointParent;
+					}
+				}
+				else
+				{
+					endElement[0] = jointParent;
+				}
+
+				var debugDiv   = document.createElement( 'div' ); // holder
+				var debugPath  = document.createElement( 'div' ); // path
+				var childArray = startElement[0].parentNode.childNodes; // target child array
+				var parent     = startElement[0].parentNode;
+				var start, end;
+
+				// setup container
+				debugDiv.classList.add( 'debug-view' );
+				debugDiv.classList.add( 'show-view' );
+				debugPath.classList.add( 'debug-view-path' );
+				debugPath.innerText = key;
+				debugDiv.appendChild( debugPath );
+
+				// calc distance between them
+				// start
+				for (var i = 0; i < childArray.length; ++i)
+				{
+					// check for comment ( start & end ) -> if its before valid start element
+					if ( childArray[i] === sortedComments[key][1] ||
+						childArray[i] === sortedComments[key][0] ||
+						childArray[i] === startElement[0] )
+					{
+						start = i;
+						if ( childArray[i] === sortedComments[key][0] )
+						{
+							start++; // increase to skip the start comment
+						}
+						break;
+					}
+				}
+				// adjust if we want to skip the start element
+				if ( startElement[1] )
+				{
+					start++;
+				}
+
+				// end
+				for (var i = start; i < childArray.length; ++i)
+				{
+					if ( childArray[i] === endElement[0] )
+					{
+						end = i;
+						// dont break to check for end comment after end valid element
+					}
+					else if ( childArray[i] === sortedComments[key][1] )
+					{
+						// if we found the end comment, we can break
+						end = i;
+						break;
+					}
+				}
+
+				// move elements
+				var number = end - start;
+				if ( endElement[1] )
+				{
+					number++;
+				}
+				for (var i = 0; i < number; ++i)
+				{
+					if ( INVALID_ELEMENTS.indexOf( childArray[start] ) !== -1 )
+					{
+						// skip invalid childs that can cause problems if moved
+						start++;
+						continue;
+					}
+					debugDiv.appendChild( childArray[start] );
+				}
+
+				// add container to DOM
+				nodeList.push( parent.insertBefore( debugDiv, childArray[start] ) );
+			}
+
+			ciDebugBar.createCookie('debug-view', 'show', 365);
+			ciDebugBar.addClass(btn, 'active');
+		}
+
+		function hideHints()
+		{
+			for (var i = 0; i < nodeList.length; ++i)
+			{
+				var index;
+
+				// find index
+				for (var j = 0; j < nodeList[i].parentNode.childNodes.length; ++j)
+				{
+					if ( nodeList[i].parentNode.childNodes[j] === nodeList[i] )
+					{
+						index = j;
+						break;
+					}
+				}
+
+				// move child back
+				while ( nodeList[i].childNodes.length !== 1 )
+				{
+					nodeList[i].parentNode.insertBefore( nodeList[i].childNodes[1], nodeList[i].parentNode.childNodes[index].nextSibling  );
+					index++;
+				}
+
+				nodeList[i].parentNode.removeChild( nodeList[i] );
+			}
+			nodeList.length = 0;
+
+			ciDebugBar.createCookie('debug-view', '', -1);
+			ciDebugBar.removeClass(btn, 'active');
+		}
+
+		var btn = document.querySelector('[data-tab=ci-views]');
+
+		// If the Views Collector is inactive stops here
+		if (! btn)
+		{
+			return;
+		}
+
+		btn.parentNode.onclick = function () {
+			if (ciDebugBar.readCookie('debug-view'))
+			{
+				hideHints();
+			}
+			else
+			{
+				showHints();
+			}
+		};
+
+		// Determine Hints state on page load
+		if (ciDebugBar.readCookie('debug-view'))
+		{
+			showHints();
+		}
+	},
+
+	//--------------------------------------------------------------------
+
+	setToolbarPosition: function () {
+		var btnPosition = document.getElementById('toolbar-position');
+
+		if (ciDebugBar.readCookie('debug-bar-position') === 'top')
+		{
+			ciDebugBar.addClass(ciDebugBar.icon, 'fixed-top');
+			ciDebugBar.addClass(ciDebugBar.toolbar, 'fixed-top');
+		}
+
+		btnPosition.addEventListener('click', function () {
+			var position = ciDebugBar.readCookie('debug-bar-position');
+
+			ciDebugBar.createCookie('debug-bar-position', '', -1);
+
+			if (!position || position === 'bottom')
+			{
+				ciDebugBar.createCookie('debug-bar-position', 'top', 365);
+				ciDebugBar.addClass(ciDebugBar.icon, 'fixed-top');
+				ciDebugBar.addClass(ciDebugBar.toolbar, 'fixed-top');
+			}
+			else
+			{
+				ciDebugBar.createCookie('debug-bar-position', 'bottom', 365);
+				ciDebugBar.removeClass(ciDebugBar.icon, 'fixed-top');
+				ciDebugBar.removeClass(ciDebugBar.toolbar, 'fixed-top');
+			}
+		}, true);
+	},
+
+	//--------------------------------------------------------------------
+
+	setToolbarTheme: function () {
+		var btnTheme    = document.getElementById('toolbar-theme');
+		var isDarkMode  = window.matchMedia("(prefers-color-scheme: dark)").matches;
+		var isLightMode = window.matchMedia("(prefers-color-scheme: light)").matches;
+
+		// If a cookie is set with a value, we force the color scheme
+		if (ciDebugBar.readCookie('debug-bar-theme') === 'dark')
+		{
+			ciDebugBar.removeClass(ciDebugBar.toolbarContainer, 'light');
+			ciDebugBar.addClass(ciDebugBar.toolbarContainer, 'dark');
+		}
+		else if (ciDebugBar.readCookie('debug-bar-theme') === 'light')
+		{
+			ciDebugBar.removeClass(ciDebugBar.toolbarContainer, 'dark');
+			ciDebugBar.addClass(ciDebugBar.toolbarContainer, 'light');
+		}
+
+		btnTheme.addEventListener('click', function () {
+			var theme = ciDebugBar.readCookie('debug-bar-theme');
+
+			if (!theme && window.matchMedia("(prefers-color-scheme: dark)").matches)
+			{
+				// If there is no cookie, and "prefers-color-scheme" is set to "dark"
+				// It means that the user wants to switch to light mode
+				ciDebugBar.createCookie('debug-bar-theme', 'light', 365);
+				ciDebugBar.removeClass(ciDebugBar.toolbarContainer, 'dark');
+				ciDebugBar.addClass(ciDebugBar.toolbarContainer, 'light');
+			}
+			else
+			{
+				if (theme === 'dark')
+				{
+					ciDebugBar.createCookie('debug-bar-theme', 'light', 365);
+					ciDebugBar.removeClass(ciDebugBar.toolbarContainer, 'dark');
+					ciDebugBar.addClass(ciDebugBar.toolbarContainer, 'light');
+				}
+				else
+				{
+					// In any other cases: if there is no cookie, or the cookie is set to
+					// "light", or the "prefers-color-scheme" is "light"...
+					ciDebugBar.createCookie('debug-bar-theme', 'dark', 365);
+					ciDebugBar.removeClass(ciDebugBar.toolbarContainer, 'light');
+					ciDebugBar.addClass(ciDebugBar.toolbarContainer, 'dark');
+				}
+			}
+		}, true);
+	},
+
+	//--------------------------------------------------------------------
+
+	/**
+	 * Helper to create a cookie.
+	 *
+	 * @param name
+	 * @param value
+	 * @param days
+	 */
+	createCookie : function (name,value,days) {
+		if (days)
+		{
+			var date = new Date();
+
+			date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+
+			var expires = "; expires=" + date.toGMTString();
+		}
+		else
+		{
+			var expires = "";
+		}
+
+		document.cookie = name + "=" + value + expires + "; path=/; samesite=Lax";
+	},
+
+	//--------------------------------------------------------------------
+
+	readCookie : function (name) {
+		var nameEQ = name + "=";
+		var ca     = document.cookie.split(';');
+
+		for (var i = 0; i < ca.length; i++)
+		{
+			var c = ca[i];
+			while (c.charAt(0) == ' ')
+			{
+				c = c.substring(1,c.length);
+			}
+			if (c.indexOf(nameEQ) == 0)
+			{
+				return c.substring(nameEQ.length,c.length);
+			}
+		}
+		return null;
+	},
+
+	//--------------------------------------------------------------------
+
+	trimSlash: function (text) {
+		return text.replace(/^\/|\/$/g, '');
+	},
+
+	routerLink: function () {
+		var row, _location;
+		var rowGet = document.querySelectorAll('#debug-bar td[data-debugbar-route="GET"]');
+		var patt   = /\((?:[^)(]+|\((?:[^)(]+|\([^)(]*\))*\))*\)/;
+
+		for (var i = 0; i < rowGet.length; i++)
+		{
+			row = rowGet[i];
+			if (!/\/\(.+?\)/.test(rowGet[i].innerText))
+			{
+				row.style = 'cursor: pointer;';
+				row.setAttribute('title', location.origin + '/' + ciDebugBar.trimSlash(row.innerText));
+				row.addEventListener('click', function (ev) {
+					_location          = location.origin + '/' + ciDebugBar.trimSlash(ev.target.innerText);
+					var redirectWindow = window.open(_location, '_blank');
+					redirectWindow.location;
+				});
+			}
+			else
+			{
+				row.innerHTML = '<div>' + row.innerText + '</div>'
+					+ '<form data-debugbar-route-tpl="' + ciDebugBar.trimSlash(row.innerText.replace(patt, '?')) + '">'
+					+ row.innerText.replace(patt, '<input type="text" placeholder="$1">')
+					+ '<input type="submit" value="Go" style="margin-left: 4px;">'
+					+ '</form>';
+			}
+		}
+
+		rowGet = document.querySelectorAll('#debug-bar td[data-debugbar-route="GET"] form');
+		for (var i = 0; i < rowGet.length; i++)
+		{
+			row = rowGet[i];
+
+			row.addEventListener('submit', function (event) {
+				event.preventDefault()
+				var inputArray = [], t = 0;
+				var input      = event.target.querySelectorAll('input[type=text]');
+				var tpl        = event.target.getAttribute('data-debugbar-route-tpl');
+
+				for (var n = 0; n < input.length; n++)
+				{
+					if (input[n].value.length > 0)
+					{
+						inputArray.push(input[n].value);
+					}
+				}
+
+				if (inputArray.length > 0)
+				{
+					_location = location.origin + '/' + tpl.replace(/\?/g, function () {
+						return inputArray[t++]
+					});
+
+					var redirectWindow = window.open(_location, '_blank');
+					redirectWindow.location;
+				}
+			})
+		}
+	}
+
+};
+</script>
+  <style type="text/css" id="debugbar_dynamic_style">
+	/*! CodeIgniter 4 - Debug bar * ============================================================================ * Forum: https://forum.codeigniter.com * Github: https://github.com/codeigniter4/codeigniter4 * Slack: https://codeigniterchat.slack.com * Website: https://codeigniter.com */ #debug-icon { bottom: 0; position: fixed; right: 0; z-index: 10000; height: 36px; width: 36px; margin: 0px; padding: 0px; clear: both; text-align: center; } #debug-icon a svg { margin: 8px; max-width: 20px; max-height: 20px; } #debug-icon.fixed-top { bottom: auto; top: 0; } #debug-icon .debug-bar-ndisplay { display: none; } #debug-bar { bottom: 0; left: 0; position: fixed; right: 0; z-index: 10000; height: 36px; line-height: 36px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji"; font-size: 16px; font-weight: 400; } #debug-bar h1 { bottom: 0; display: inline-block; font-size: 14px; font-weight: normal; margin: 0 16px 0 0; padding: 0; position: absolute; right: 30px; text-align: left; top: 0; } #debug-bar h1 svg { width: 16px; margin-right: 5px; } #debug-bar h2 { font-size: 16px; margin: 0; padding: 5px 0 10px 0; } #debug-bar h2 span { font-size: 13px; } #debug-bar h3 { font-size: 12px; font-weight: 200; margin: 0 0 0 10px; padding: 0; text-transform: uppercase; } #debug-bar p { font-size: 12px; margin: 0 0 0 15px; padding: 0; } #debug-bar a { text-decoration: none; } #debug-bar a:hover { text-decoration: underline; } #debug-bar button { border: 1px solid; border-radius: 4px; -moz-border-radius: 4px; -webkit-border-radius: 4px; cursor: pointer; line-height: 15px; } #debug-bar button:hover { text-decoration: underline; } #debug-bar table { border-collapse: collapse; font-size: 14px; line-height: normal; margin: 5px 10px 15px 10px; width: calc(100% - 10px); } #debug-bar table strong { font-weight: 500; } #debug-bar table th { display: table-cell; font-weight: 600; padding-bottom: 0.7em; text-align: left; } #debug-bar table tr { border: none; } #debug-bar table td { border: none; display: table-cell; margin: 0; text-align: left; } #debug-bar table td:first-child { max-width: 20%; } #debug-bar table td:first-child.narrow { width: 7em; } #debug-bar td[data-debugbar-route] form { display: none; } #debug-bar td[data-debugbar-route]:hover form { display: block; } #debug-bar td[data-debugbar-route]:hover > div { display: none; } #debug-bar td[data-debugbar-route] input[type=text] { padding: 2px; } #debug-bar .toolbar { display: flex; overflow: hidden; overflow-y: auto; padding: 0 12px 0 12px; /* give room for OS X scrollbar */ white-space: nowrap; z-index: 10000; } #debug-bar.fixed-top { bottom: auto; top: 0; } #debug-bar.fixed-top .tab { bottom: auto; top: 36px; } #debug-bar #toolbar-position a, #debug-bar #toolbar-theme a { padding: 0 6px; display: inline-flex; vertical-align: top; } #debug-bar #toolbar-position a:hover, #debug-bar #toolbar-theme a:hover { text-decoration: none; } #debug-bar #debug-bar-link { bottom: 0; display: inline-block; font-size: 16px; line-height: 36px; padding: 6px; position: absolute; right: 10px; top: 0; width: 24px; } #debug-bar .ci-label { display: inline-flex; font-size: 14px; } #debug-bar .ci-label:hover { cursor: pointer; } #debug-bar .ci-label a { color: inherit; display: flex; letter-spacing: normal; padding: 0 10px; text-decoration: none; align-items: center; } #debug-bar .ci-label img { margin: 6px 3px 6px 0; width: 16px !important; } #debug-bar .ci-label .badge { border-radius: 12px; -moz-border-radius: 12px; -webkit-border-radius: 12px; display: inline-block; font-size: 75%; font-weight: bold; line-height: 12px; margin-left: 5px; padding: 2px 5px; text-align: center; vertical-align: baseline; white-space: nowrap; } #debug-bar .tab { bottom: 35px; display: none; left: 0; max-height: 62%; overflow: hidden; overflow-y: auto; padding: 1em 2em; position: fixed; right: 0; z-index: 9999; } #debug-bar .timeline { margin-left: 0; width: 100%; } #debug-bar .timeline th { border-left: 1px solid; font-size: 12px; font-weight: 200; padding: 5px 5px 10px 5px; position: relative; text-align: left; } #debug-bar .timeline th:first-child { border-left: 0; } #debug-bar .timeline td { border-left: 1px solid; padding: 5px; position: relative; } #debug-bar .timeline td:first-child { border-left: 0; } #debug-bar .timeline .timer { border-radius: 4px; -moz-border-radius: 4px; -webkit-border-radius: 4px; display: inline-block; padding: 5px; position: absolute; top: 30%; } #debug-bar .route-params, #debug-bar .route-params-item { vertical-align: top; } #debug-bar .route-params td:first-child, #debug-bar .route-params-item td:first-child { font-style: italic; padding-left: 1em; text-align: right; } .debug-view.show-view { border: 1px solid; margin: 4px; } .debug-view-path { font-family: monospace; font-size: 12px; letter-spacing: normal; min-height: 16px; padding: 2px; text-align: left; } .show-view .debug-view-path { display: block !important; } @media screen and (max-width: 1024px) { #debug-bar .ci-label img { margin: unset; } .hide-sm { display: none !important; } } #debug-icon { background-color: #FFFFFF; box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #debug-icon a:active, #debug-icon a:link, #debug-icon a:visited { color: #DD8615; } #debug-bar { background-color: #FFFFFF; color: #434343; } #debug-bar h1, #debug-bar h2, #debug-bar h3, #debug-bar p, #debug-bar a, #debug-bar button, #debug-bar table, #debug-bar thead, #debug-bar tr, #debug-bar td, #debug-bar button, #debug-bar .toolbar { background-color: transparent; color: #434343; } #debug-bar button { background-color: #FFFFFF; } #debug-bar table strong { color: #FDC894; } #debug-bar table tbody tr:hover { background-color: #DFDFDF; } #debug-bar table tbody tr.current { background-color: #FDC894; } #debug-bar table tbody tr.current:hover td { background-color: #DD4814; color: #FFFFFF; } #debug-bar .toolbar { background-color: #FFFFFF; box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #debug-bar .toolbar img { filter: brightness(0) invert(0.4); } #debug-bar.fixed-top .toolbar { box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #debug-bar.fixed-top .tab { box-shadow: 0 1px 4px #DFDFDF; -moz-box-shadow: 0 1px 4px #DFDFDF; -webkit-box-shadow: 0 1px 4px #DFDFDF; } #debug-bar .muted { color: #434343; } #debug-bar .muted td { color: #DFDFDF; } #debug-bar .muted:hover td { color: #434343; } #debug-bar #toolbar-position, #debug-bar #toolbar-theme { filter: brightness(0) invert(0.6); } #debug-bar .ci-label.active { background-color: #DFDFDF; } #debug-bar .ci-label:hover { background-color: #DFDFDF; } #debug-bar .ci-label .badge { background-color: #5BC0DE; color: #FFFFFF; } #debug-bar .tab { background-color: #FFFFFF; box-shadow: 0 -1px 4px #DFDFDF; -moz-box-shadow: 0 -1px 4px #DFDFDF; -webkit-box-shadow: 0 -1px 4px #DFDFDF; } #debug-bar .timeline th, #debug-bar .timeline td { border-color: #DFDFDF; } #debug-bar .timeline .timer { background-color: #DD8615; } .debug-view.show-view { border-color: #DD8615; } .debug-view-path { background-color: #FDC894; color: #434343; } @media (prefers-color-scheme: dark) { #debug-icon { background-color: #252525; box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #debug-icon a:active, #debug-icon a:link, #debug-icon a:visited { color: #DD8615; } #debug-bar { background-color: #252525; color: #DFDFDF; } #debug-bar h1, #debug-bar h2, #debug-bar h3, #debug-bar p, #debug-bar a, #debug-bar button, #debug-bar table, #debug-bar thead, #debug-bar tr, #debug-bar td, #debug-bar button, #debug-bar .toolbar { background-color: transparent; color: #DFDFDF; } #debug-bar button { background-color: #252525; } #debug-bar table strong { color: #FDC894; } #debug-bar table tbody tr:hover { background-color: #434343; } #debug-bar table tbody tr.current { background-color: #FDC894; } #debug-bar table tbody tr.current td { color: #252525; } #debug-bar table tbody tr.current:hover td { background-color: #DD4814; color: #FFFFFF; } #debug-bar .toolbar { background-color: #434343; box-shadow: 0 0 4px #434343; -moz-box-shadow: 0 0 4px #434343; -webkit-box-shadow: 0 0 4px #434343; } #debug-bar .toolbar img { filter: brightness(0) invert(1); } #debug-bar.fixed-top .toolbar { box-shadow: 0 0 4px #434343; -moz-box-shadow: 0 0 4px #434343; -webkit-box-shadow: 0 0 4px #434343; } #debug-bar.fixed-top .tab { box-shadow: 0 1px 4px #434343; -moz-box-shadow: 0 1px 4px #434343; -webkit-box-shadow: 0 1px 4px #434343; } #debug-bar .muted { color: #DFDFDF; } #debug-bar .muted td { color: #434343; } #debug-bar .muted:hover td { color: #DFDFDF; } #debug-bar #toolbar-position, #debug-bar #toolbar-theme { filter: brightness(0) invert(0.6); } #debug-bar .ci-label.active { background-color: #252525; } #debug-bar .ci-label:hover { background-color: #252525; } #debug-bar .ci-label .badge { background-color: #5BC0DE; color: #DFDFDF; } #debug-bar .tab { background-color: #252525; box-shadow: 0 -1px 4px #434343; -moz-box-shadow: 0 -1px 4px #434343; -webkit-box-shadow: 0 -1px 4px #434343; } #debug-bar .timeline th, #debug-bar .timeline td { border-color: #434343; } #debug-bar .timeline .timer { background-color: #DD8615; } .debug-view.show-view { border-color: #DD8615; } .debug-view-path { background-color: #FDC894; color: #434343; } } #toolbarContainer.dark #debug-icon { background-color: #252525; box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #toolbarContainer.dark #debug-icon a:active, #toolbarContainer.dark #debug-icon a:link, #toolbarContainer.dark #debug-icon a:visited { color: #DD8615; } #toolbarContainer.dark #debug-bar { background-color: #252525; color: #DFDFDF; } #toolbarContainer.dark #debug-bar h1, #toolbarContainer.dark #debug-bar h2, #toolbarContainer.dark #debug-bar h3, #toolbarContainer.dark #debug-bar p, #toolbarContainer.dark #debug-bar a, #toolbarContainer.dark #debug-bar button, #toolbarContainer.dark #debug-bar table, #toolbarContainer.dark #debug-bar thead, #toolbarContainer.dark #debug-bar tr, #toolbarContainer.dark #debug-bar td, #toolbarContainer.dark #debug-bar button, #toolbarContainer.dark #debug-bar .toolbar { background-color: transparent; color: #DFDFDF; } #toolbarContainer.dark #debug-bar button { background-color: #252525; } #toolbarContainer.dark #debug-bar table strong { color: #FDC894; } #toolbarContainer.dark #debug-bar table tbody tr:hover { background-color: #434343; } #toolbarContainer.dark #debug-bar table tbody tr.current { background-color: #FDC894; } #toolbarContainer.dark #debug-bar table tbody tr.current td { color: #252525; } #toolbarContainer.dark #debug-bar table tbody tr.current:hover td { background-color: #DD4814; color: #FFFFFF; } #toolbarContainer.dark #debug-bar .toolbar { background-color: #434343; box-shadow: 0 0 4px #434343; -moz-box-shadow: 0 0 4px #434343; -webkit-box-shadow: 0 0 4px #434343; } #toolbarContainer.dark #debug-bar .toolbar img { filter: brightness(0) invert(1); } #toolbarContainer.dark #debug-bar.fixed-top .toolbar { box-shadow: 0 0 4px #434343; -moz-box-shadow: 0 0 4px #434343; -webkit-box-shadow: 0 0 4px #434343; } #toolbarContainer.dark #debug-bar.fixed-top .tab { box-shadow: 0 1px 4px #434343; -moz-box-shadow: 0 1px 4px #434343; -webkit-box-shadow: 0 1px 4px #434343; } #toolbarContainer.dark #debug-bar .muted { color: #DFDFDF; } #toolbarContainer.dark #debug-bar .muted td { color: #434343; } #toolbarContainer.dark #debug-bar .muted:hover td { color: #DFDFDF; } #toolbarContainer.dark #debug-bar #toolbar-position, #toolbarContainer.dark #debug-bar #toolbar-theme { filter: brightness(0) invert(0.6); } #toolbarContainer.dark #debug-bar .ci-label.active { background-color: #252525; } #toolbarContainer.dark #debug-bar .ci-label:hover { background-color: #252525; } #toolbarContainer.dark #debug-bar .ci-label .badge { background-color: #5BC0DE; color: #DFDFDF; } #toolbarContainer.dark #debug-bar .tab { background-color: #252525; box-shadow: 0 -1px 4px #434343; -moz-box-shadow: 0 -1px 4px #434343; -webkit-box-shadow: 0 -1px 4px #434343; } #toolbarContainer.dark #debug-bar .timeline th, #toolbarContainer.dark #debug-bar .timeline td { border-color: #434343; } #toolbarContainer.dark #debug-bar .timeline .timer { background-color: #DD8615; } #toolbarContainer.dark .debug-view.show-view { border-color: #DD8615; } #toolbarContainer.dark .debug-view-path { background-color: #FDC894; color: #434343; } #toolbarContainer.dark td[data-debugbar-route] input[type=text] { background: #000; color: #fff; } #toolbarContainer.light #debug-icon { background-color: #FFFFFF; box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #toolbarContainer.light #debug-icon a:active, #toolbarContainer.light #debug-icon a:link, #toolbarContainer.light #debug-icon a:visited { color: #DD8615; } #toolbarContainer.light #debug-bar { background-color: #FFFFFF; color: #434343; } #toolbarContainer.light #debug-bar h1, #toolbarContainer.light #debug-bar h2, #toolbarContainer.light #debug-bar h3, #toolbarContainer.light #debug-bar p, #toolbarContainer.light #debug-bar a, #toolbarContainer.light #debug-bar button, #toolbarContainer.light #debug-bar table, #toolbarContainer.light #debug-bar thead, #toolbarContainer.light #debug-bar tr, #toolbarContainer.light #debug-bar td, #toolbarContainer.light #debug-bar button, #toolbarContainer.light #debug-bar .toolbar { background-color: transparent; color: #434343; } #toolbarContainer.light #debug-bar button { background-color: #FFFFFF; } #toolbarContainer.light #debug-bar table strong { color: #FDC894; } #toolbarContainer.light #debug-bar table tbody tr:hover { background-color: #DFDFDF; } #toolbarContainer.light #debug-bar table tbody tr.current { background-color: #FDC894; } #toolbarContainer.light #debug-bar table tbody tr.current:hover td { background-color: #DD4814; color: #FFFFFF; } #toolbarContainer.light #debug-bar .toolbar { background-color: #FFFFFF; box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #toolbarContainer.light #debug-bar .toolbar img { filter: brightness(0) invert(0.4); } #toolbarContainer.light #debug-bar.fixed-top .toolbar { box-shadow: 0 0 4px #DFDFDF; -moz-box-shadow: 0 0 4px #DFDFDF; -webkit-box-shadow: 0 0 4px #DFDFDF; } #toolbarContainer.light #debug-bar.fixed-top .tab { box-shadow: 0 1px 4px #DFDFDF; -moz-box-shadow: 0 1px 4px #DFDFDF; -webkit-box-shadow: 0 1px 4px #DFDFDF; } #toolbarContainer.light #debug-bar .muted { color: #434343; } #toolbarContainer.light #debug-bar .muted td { color: #DFDFDF; } #toolbarContainer.light #debug-bar .muted:hover td { color: #434343; } #toolbarContainer.light #debug-bar #toolbar-position, #toolbarContainer.light #debug-bar #toolbar-theme { filter: brightness(0) invert(0.6); } #toolbarContainer.light #debug-bar .ci-label.active { background-color: #DFDFDF; } #toolbarContainer.light #debug-bar .ci-label:hover { background-color: #DFDFDF; } #toolbarContainer.light #debug-bar .ci-label .badge { background-color: #5BC0DE; color: #FFFFFF; } #toolbarContainer.light #debug-bar .tab { background-color: #FFFFFF; box-shadow: 0 -1px 4px #DFDFDF; -moz-box-shadow: 0 -1px 4px #DFDFDF; -webkit-box-shadow: 0 -1px 4px #DFDFDF; } #toolbarContainer.light #debug-bar .timeline th, #toolbarContainer.light #debug-bar .timeline td { border-color: #DFDFDF; } #toolbarContainer.light #debug-bar .timeline .timer { background-color: #DD8615; } #toolbarContainer.light .debug-view.show-view { border-color: #DD8615; } #toolbarContainer.light .debug-view-path { background-color: #FDC894; color: #434343; } .debug-bar-width30 { width: 30%; } .debug-bar-width10 { width: 10%; } .debug-bar-width70p { width: 70px; } .debug-bar-width140p { width: 140px; } .debug-bar-width20e { width: 20em; } .debug-bar-width6r { width: 6rem; } .debug-bar-ndisplay { display: none; } .debug-bar-alignRight { text-align: right; } .debug-bar-alignLeft { text-align: left; } .debug-bar-noverflow { overflow: hidden; } 
+		.debug-bar-timeline-0 {
+		left: 0.50703684488932%; width: 15.126864115397%;	}
+
+		.debug-bar-timeline-1 {
+		left: 15.640258789062%; width: 0.96638997395833%;	}
+
+		.debug-bar-timeline-2 {
+		left: 18.486976623535%; width: 70.592562357585%;	}
+
+		.debug-bar-timeline-3 {
+		left: 18.493334452311%; width: 9.8673502604167%;	}
+
+		.debug-bar-timeline-4 {
+		left: 41.48006439209%; width: 1.62%;	}
+
+		.debug-bar-timeline-5 {
+		left: 47.526359558105%; width: 0.72%;	}
+
+		.debug-bar-timeline-6 {
+		left: 50.187110900879%; width: 0.88666666666667%;	}
+
+		.debug-bar-timeline-7 {
+		left: 52.220026652018%; width: 0.6%;	}
+
+		.debug-bar-timeline-8 {
+		left: 53.933461507161%; width: 0.56%;	}
+
+		.debug-bar-timeline-9 {
+		left: 55.586496988932%; width: 0.77333333333333%;	}
+
+		.debug-bar-timeline-10 {
+		left: 56.819915771484%; width: 0.44%;	}
+
+		.debug-bar-timeline-11 {
+		left: 57.773590087891%; width: 0.42666666666667%;	}
+
+		.debug-bar-timeline-12 {
+		left: 58.627128601074%; width: 0.44%;	}
+
+		.debug-bar-timeline-13 {
+		left: 59.626897176107%; width: 0.39333333333333%;	}
+
+		.debug-bar-timeline-14 {
+		left: 62.020619710286%; width: 0.70666666666667%;	}
+
+		.debug-bar-timeline-15 {
+		left: 63.273111979167%; width: 0.4%;	}
+
+		.debug-bar-timeline-16 {
+		left: 66.720644632975%; width: 0.59333333333333%;	}
+
+		.debug-bar-timeline-17 {
+		left: 67.927042643229%; width: 0.4%;	}
+
+		.debug-bar-timeline-18 {
+		left: 69.526036580404%; width: 0.41333333333333%;	}
+
+		.debug-bar-timeline-19 {
+		left: 80.827077229818%; width: 0.56%;	}
+
+		.debug-bar-timeline-20 {
+		left: 83.85976155599%; width: 0.44666666666667%;	}
+
+		.debug-bar-timeline-21 {
+		left: 84.713300069173%; width: 0.38%;	}
+
+		.debug-bar-timeline-22 {
+		left: 85.47306060791%; width: 0.36666666666667%;	}
+
+		.debug-bar-timeline-23 {
+		left: 86.232821146647%; width: 0.37333333333333%;	}
+
+		.debug-bar-timeline-24 {
+		left: 72.166124979655%; width: 7.4672698974609%;	}
+
+		.debug-bar-timeline-25 {
+		left: 60.946146647135%; width: 27.887026468913%;	}
+
+	</style> 
+	<meta charset="UTF-8">
+	<meta http-equiv="X-UA-Compatible" content="IE-edge">
+	<meta name="viewport" content="width=device-width,initial-scale=1.0">
+	<title>Pusat Data & Laporan</title>
+	<link rel="stylesheet" href="../../asset/css/style.css">
+	<script src="https://kit.fontawesome.com/4592f70558.js" crossorigin="anonymous"></script>
+	
+<meta content="Pusat Data & Laporan , , " name="keywords"> 
+  <!-- Favicons --> 
+  <link href="https://pusdalap.binabangsa.ac.id/assets/upload/image/1644930038_c1ce7a8999478c1fc36a.png" rel="icon"> 
+  <link href="https://pusdalap.binabangsa.ac.id/assets/upload/image/1644930038_c1ce7a8999478c1fc36a.png" rel="apple-touch-icon"> 
+  <!-- Plugin css --> 
+  <!--====== Slick css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/slick.css"> 
+  <!--====== Animate css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/animate.css"> 
+  <!--====== Nice Select css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/nice-select.css"> 
+  <!--====== Nice Number css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/jquery.nice-number.min.css"> 
+  <!--====== Magnific Popup css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/magnific-popup.css"> 
+  <!--====== Bootstrap css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/bootstrap.min.css"> 
+  <!--====== Fontawesome css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/font-awesome.min.css"> 
+  <!-- lightcase Js css --> 
+  <link rel="stylesheet" type="text/css" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/lightcase.css" media="all"> 
+  <!--====== Default css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/default.css"> 
+  <!--====== Style css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/style.css"> 
+  <!--====== Responsive css ======--> 
+  <link rel="stylesheet" href="https://pusdalap.binabangsa.ac.id/assets/tema/css/responsive.css"> 
+</head>
+<body>
+	<nav>
+		<div class="logo">
+			<a href="#"><img src="../../asset/img/icon.png" alt="logo">UNIVERSITAS BINA BANGSA</a>
+		</div>
+		<div class="toggle">
+			<a href="#"><ion-icon name="menu-outline"></ion-icon></a>
+		</div>
+		<ul class="menu">
+			<li><a href="../../UAS.html">HOME</a></li>
+			<li class="dropdown">
+				<a href="javascript:void(0)" class="dropbtn">PROFIL</a>
+				<div class="dropdown-content">
+					<a href="../profil/Sejarah.html">SEJARAH</a>
+					<a href="../profil/Struktur.html">STRUKTUR ORGANISASI</a>
+					<a href="../profil/VisiMisi.html">VISI MISI & TUJUAN</a>
+				</div>
+			</li>
+			<li class="dropdown">
+				<a href="javascript:void(0)" class="dropbtn">FAKULTAS</a>
+				<div class="dropdown-content">
+					<a href="../fakultas/PascaSarjana.html">PROGRAM PASCA SARJANA</a>
+					<a href="../fakultas/FEB.html">FAKULTAS EKONOMI DAN BISNIS</a>
+					<a href="../fakultas/FakHukum.html">FAKULTAS HUKUM</a>
+					<a href="../fakultas/FKIP.html">FAKULTAS KEGURUAN & ILMU PENDIDIKAN</a>
+					<a href="../fakultas/FILKOM.html">FAKULTAS ILMU KOMPUTER</a>
+					<a href="../fakultas/FISIP.html">FAKULTAS ILMU SOSIAL DAN ILMU POLITIK</a>
+					<a href="../fakultas/FakSAINTEK.html">FAKULTAS SAINS DAN TEKNOLOGI</a>
+					<a href="../fakultas/FILKES.html">FAKULTAS ILMU KESEHATAN</a>
+				</div>
+			</li>
+			<li class="dropdown">
+				<a href="javascript:void(0)" class="dropbtn">LEMBAGA</a>
+				<div class="dropdown-content">
+					<a href="spmi.html">SPMI</a>
+					<a href="lp2m.html">LP2M</a>
+					<a href="humas.html">BIDANG HUMAS</a>
+					<a href="lkbh.html">LKBH UNIBA</a>
+					<a href="sertifikasi-profesi.html">LEMBAGA SERTIFIKASI PROFESI</a>
+					<a href="inkubator-bisnis.html">INKUBATOR BISNIS DAN KEWIRAUSAHAAN</a>
+					<a href="pusat-bahasa.html">PUSAT BAHASA</a>
+					<a href="tax-centre.html">TAX CENTRE</a>
+					<a href="lab.html">LABORATORIUM</a>
+					<a href="perpus.html">PERPUSTAKAAN</a>
+					<a href="pusat-studi-dosen.html">PUSAT STUDI DOSEN DAN BIDANG ILMU</a>
+					<a href="bidang-kerjasama.html">BIDANG KERJASAMA</a>
+					<a href="pusat-data.html">PUSAT DATA DAN PELAPORAN</a>
+				</div>
+			</li>
+			<li class="dropdown">
+				<a href="javascript:void(0)" class="dropbtn">ORGAMA</a>
+				<div class="dropdown-content">
+					<a href="../orgama/dpm.html">DPM</a>
+					<a href="../orgama/bem.html">BEM</a>
+					<a href="../orgama/labaik.html">LABAIK</a>
+					<a href="../orgama/ikoma.html">IKOMA</a>
+					<a href="../orgama/ksr.html">KSR</a>
+					<a href="../orgama/psm.ht">PSM</a>
+					<a href="../orgama/mapelba.html">MAPELBA</a>
+					<a href="../orgama/lisbu.html">LISBU</a>
+					<a href="../orgama/extama.html">EXTAMA</a>
+					<a href="../orgama/resimen-mahasiswa.html">RESIMEN MAHASISWA UNIBA</a>
+				</div>
+			</li>
+			<li><a href="../sarpas.html">SARPAS</a></li>
+			<li class="dropdown">
+				<a href="javascript:void(0)" class="dropbtn">DOK KINERJA</a>
+				<div class="dropdown-content">
+					<a href="../dok-kinerja/rencana-strategis.html">RENCANA STRATEGIS</a>
+					<a href="../dok-kinerja/perjanjian-kinerja.html">PERJANJIAN KINERJA</a>
+					<a href="../dok-kinerja/laporan-kinerja.html">LAPORAN KINERJA</a>
+					<a href="../dok-kinerja/indikator-kerja-utama.html">INDIKATOR KERJA UTAMA (IKU)</a>
+				</div>
+			</li>
+		</ul>
+		<div class="search-box">
+			<input type="text" placeholder="Search Here">
+			<a href="#"><i class="fa-solid fa-magnifying-glass"></i></a>
+	</nav>
+	<!-- <div class="container">
+		<div class="container-slide">
+			<div class="imgslide fade">
+				<img src="../../asset/img/1.jpg" alt="">
+			</div>
+			<div class="imgslide fade">
+				<img src="../../asset/img/2.jpg" alt="">
+			</div>
+			<a class="prev" onclick="nextslide(-1)">&#10094;</a>
+			<a class="next" onclick="nextslide(1)">&#10095;</a>
+		</div>
+	</div> -->
+	
+  <!-- header top --> 
+   <div class="navigation navigation-2"> 
+    <div class="container"> 
+     <div class="row no-gutters"> 
+      <div class="col-lg-11 col-md-10 col-sm-9 col-9"> 
+       <nav class="navbar navbar-expand-lg"> 
+        <a href="https://pusdalap.binabangsa.ac.id" class="navbar-brand"> <img src="https://pusdalap.binabangsa.ac.id/assets/upload/image/1644929986_4e383b62cce03c5bf58f.png" alt="Logo" width="50px"> <h6 style="display: inline;" class="ml-2">Pusat Data & Laporan<br></h6><p style="margin-left:65px;margin-top:-20px;">Universitas Bina Bangsa</p> </a> 
+        <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation"> <span class="icon-bar"></span> <span class="icon-bar"></span> <span class="icon-bar"></span> </button> 
+        <div class="collapse navbar-collapse sub-menu-bar" id="navbarSupportedContent"> 
+         <ul class="navbar-nav ml-auto"> 
+          <li class="nav-item"> <a class="active" href="https://pusdalap.binabangsa.ac.id">Home</a> </li> 
+          <li class="nav-item"> <a href="#">Profil<button class="sub-nav-toggler"> <i class="fa fa-chevron-down"></i> </button></a> 
+           <ul class="sub-menu"> 
+            <li><a href="https://pusdalap.binabangsa.ac.id/halaman/read/tentang">Tentang</a></li> 
+            <li><a href="https://pusdalap.binabangsa.ac.id/halaman/read/visi-misi">Visi dan Misi</a></li> 
+           </ul> </li> 
+          <li class="nav-item"> <a href="#">Formasi<button class="sub-nav-toggler"> <i class="fa fa-chevron-down"></i> </button></a> 
+           <ul class="sub-menu"> 
+            <li><a href="https://pusdalap.binabangsa.ac.id/pejabat">Pejabat</a></li> 
+            <li><a href="https://pusdalap.binabangsa.ac.id/pegawai">Pegawai</a></li> 
+           </ul> </li> 
+          <li class="nav-item"> <a href="https://pusdalap.binabangsa.ac.id/album">Galery</a> </li> 
+          <li> <a href="https://pusdalap.binabangsa.ac.id/halaman/read/informasi-spmi">Informasi Lab</a> </li> 
+         </ul> 
+        </div> 
+       </nav> 
+       <!-- nav --> 
+      </div> 
+      <div class="col-lg-1 col-md-2 col-sm-3 col-3"> 
+       <div class="right-icon text-right"> 
+        <ul> 
+         <li><a href="#" id="search"><i class="fa fa-search"></i></a></li> 
+        </ul> 
+       </div> 
+       <!-- right icon --> 
+      </div> 
+     </div> 
+     <!-- row --> 
+    </div> 
+    <!-- container --> 
+   </div> 
+  </header> 
+  <!--====== HEADER PART ENDS ======--> 
+
+  <!--====== SLIDER PART START ======--> 
+  <section id="slider-part" class="slider-active slick-initialized slick-slider"> 
+   <!-- single slider --> 
+   <!-- single slider --> 
+   <div class="slick-list draggable">
+    <div class="slick-track" style="opacity: 1; width: 848px;">
+     <div class="single-slider slider-2 bg_cover slick-slide slick-current slick-active" style="background-image: url(&quot;https://pusdalap.binabangsa.ac.id/assets/upload/image/berita/baznas.jpg&quot;); width: 424px; position: relative; left: 0px; top: 0px; z-index: 999; opacity: 1;" data-overlay="4" data-slick-index="0" aria-hidden="false" tabindex="0"> 
+      <div class="container"> 
+       <div class="row"> 
+        <div class="col-xl-9 col-lg-10"> 
+         <div class="slider-cont"> 
+          <h1 data-animation="bounceInLeft" data-delay="1s" class="animated bounceInLeft" style="animation-delay: 1s;">Baznas Kabupaten Tangerang Akan Bedah 58 Rumah Warga Miskin</h1> 
+          <a data-animation="fadeInUp" data-delay="1.3s" href="https://pusdalap.binabangsa.ac.id/berita/read/baznas-kabupaten-tangerang-akan-bedah-58-rumah-warga-miskin" class="main-btn animated fadeInUp" tabindex="0" style="animation-delay: 1.3s;">Lihat Selengkapnya</a> 
+         </div> 
+        </div> 
+       </div> 
+       <!-- row --> 
+      </div> 
+      <!-- container --> 
+     </div>
+     <div class="single-slider slider-2 bg_cover slick-slide" style="background-image: url(&quot;https://pusdalap.binabangsa.ac.id/assets/upload/image/berita/IMG-20220212-WA0014-640x493.jpg&quot;); width: 424px; position: relative; left: -424px; top: 0px; z-index: 998; opacity: 0;" data-overlay="4" data-slick-index="1" aria-hidden="true" tabindex="-1"> 
+      <div class="container"> 
+       <div class="row"> 
+        <div class="col-xl-9 col-lg-10"> 
+         <div class="slider-cont"> 
+          <h1 data-animation="bounceInLeft" data-delay="1s">Warga Diminta Selalu Taati Prokes ditengah Pandemi Wabah Omicron</h1> 
+          <a data-animation="fadeInUp" data-delay="1.3s" href="https://pusdalap.binabangsa.ac.id/berita/read/warga-diminta-selalu-taati-prokes-ditengah-pandemi-wabah-omicron" class="main-btn" tabindex="-1">Lihat Selengkapnya</a> 
+         </div> 
+        </div> 
+       </div> 
+       <!-- row --> 
+      </div> 
+      <!-- container --> 
+     </div>
+    </div>
+   </div>
+  </section> 
+  <!--====== SLIDER PART ENDS ======--> 
+
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.3/jquery.min.js"></script>
+
+	<script>
+		$(".toggle").on("click", function(){
+			if($(".menu").hasClass("active")){
+		    	$(".menu").removeClass("active");
+		    	$(this).find("a").html("<ion-icon name='menu-outline'></ion-icon>");
+			} else {
+				$(".menu").addClass("active");
+				$(this).find("a").html("<ion-icon name='close-outline'></ion-icon>");
+			}
+		})
+		
+		var slideIndex = 1;
+			showSlide(slideIndex);
+
+		function nextslide(n) {
+			showSlide(slideIndex = n);
+		}
+
+		function showSlide(n) {
+			var i;
+			var slides = document.getElementsByClassName ("imgslide");
+
+			if (n > slides.length) {
+				slideIndex = 1
+			}
+
+			if (n < 1) {
+				slideIndex = slides.length;
+			}
+
+			for (i = 0; i <slides.length; i++) {
+				slides[i].style.display = "none";
+			}
+
+			slides[slideIndex - 1].style.display = "block";
+		}
+	</script>
+</body>
+</html>
